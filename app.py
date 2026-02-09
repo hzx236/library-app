@@ -87,7 +87,6 @@ if st.session_state.bk_focus is not None:
     st.markdown(f"# 📖 {title_key}")
     
     c1, c2, c3 = st.columns(3)
-    # 此处修正标签 1
     infos = [("👤 作者", row.iloc[idx['author']]), ("📚 类型", row.iloc[idx['fnf']]), ("🎯 Interest Level", row.iloc[idx['il']]), 
              ("📊 ATOS Book Level", row.iloc[idx['ar']]), ("🔢 Quiz No.", row.iloc[idx['quiz']]), ("📝 词数", f"{row.iloc[idx['word']]:,}"), 
              ("🔗 系列", row.iloc[idx['series']]), ("🏷️ 主题", row.iloc[idx['topic']]), ("🙋 推荐人", row.iloc[idx['rec']])]
@@ -148,6 +147,13 @@ if st.session_state.bk_focus is not None:
 # ==========================================
 elif not df.empty:
     with st.sidebar:
+        # --- 已经改为 YDRC-logo.png ---
+        try:
+            st.image("YDRC-logo.png", use_container_width=True)
+        except:
+            pass 
+        # -----------------------------
+        
         st.markdown('<div class="sidebar-title">🔍 检索中心</div>', unsafe_allow_html=True)
         f_fuzzy = st.text_input("💡 **智能模糊检索**", placeholder="输入关键词...")
         st.write("---")
@@ -160,7 +166,6 @@ elif not df.empty:
         f_series = st.text_input("🔗 系列 (Series)")
         f_topic = st.text_input("🏷️ 主题 (Topic)")
         st.write("---")
-        # 此处修正标签 2
         f_ar = st.slider("📊 ATOS Book Level 范围", 0.0, 12.0, (0.0, 12.0))
 
     f_df = df.copy()
@@ -213,7 +218,6 @@ elif not df.empty:
                     st.session_state.bk_focus = orig_idx; st.rerun()
 
     with tab2:
-        # 此处修正标签 3
         st.subheader("📊 ATOS Book Level 数据分布")
         if not f_df.empty:
             ar_counts = f_df.iloc[:, idx['ar']].value_counts().sort_index()
