@@ -5,7 +5,7 @@ import json
 import os
 
 # ==========================================
-# 1. 样式与视觉配置 (完全锁定，保持美观)
+# 1. 样式与视觉配置
 # ==========================================
 st.set_page_config(page_title="智慧书库·全能旗舰版", layout="wide")
 
@@ -34,7 +34,7 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 # ==========================================
-# 2. 数据引擎与永久化存储 (为网页版做准备)
+# 2. 数据引擎
 # ==========================================
 CSV_URL = "https://docs.google.com/spreadsheets/d/e/2PACX-1vTTIN0pxN-TYH1-_Exm6dfsUdo7SbnqVnWvdP_kqe63PkSL8ni7bH6r6c86MLUtf_q58r0gI2Ft2460/pub?output=csv"
 COMMENTS_FILE = "comments.json"
@@ -43,9 +43,7 @@ COMMENTS_FILE = "comments.json"
 def load_data():
     try:
         df = pd.read_csv(CSV_URL)
-        # 列索引映射
         c = {"title": 3, "author": 4, "il": 1, "ar": 5, "quiz": 7, "word": 8, "en": 10, "cn": 12, "fnf": 14, "topic": 15, "series": 16, "rec": 2}
-        # 数据清洗
         df.iloc[:, c['ar']] = pd.to_numeric(df.iloc[:, c['ar']].astype(str).str.extract(r'(\d+\.?\d*)')[0], errors='coerce').fillna(0.0)
         df.iloc[:, c['word']] = pd.to_numeric(df.iloc[:, c['word']], errors='coerce').fillna(0).astype(int)
         return df.fillna(" "), c
@@ -74,7 +72,7 @@ for key in ['bk_focus', 'lang_mode', 'likes', 'voted', 'comments', 'edit_id', 'b
         else: st.session_state[key] = None
 
 # ==========================================
-# 3. 图书详情页 (包含留言功能)
+# 3. 图书详情页
 # ==========================================
 if st.session_state.bk_focus is not None:
     row = df.iloc[st.session_state.bk_focus]
@@ -88,10 +86,10 @@ if st.session_state.bk_focus is not None:
     
     st.markdown(f"# 📖 {title_key}")
     
-    # 信息卡片展示
     c1, c2, c3 = st.columns(3)
+    # 此处修正标签 1
     infos = [("👤 作者", row.iloc[idx['author']]), ("📚 类型", row.iloc[idx['fnf']]), ("🎯 Interest Level", row.iloc[idx['il']]), 
-             ("📊 AR Level", row.iloc[idx['ar']]), ("🔢 Quiz No.", row.iloc[idx['quiz']]), ("📝 词数", f"{row.iloc[idx['word']]:,}"), 
+             ("📊 ATOS Book Level", row.iloc[idx['ar']]), ("🔢 Quiz No.", row.iloc[idx['quiz']]), ("📝 词数", f"{row.iloc[idx['word']]:,}"), 
              ("🔗 系列", row.iloc[idx['series']]), ("🏷️ 主题", row.iloc[idx['topic']]), ("🙋 推荐人", row.iloc[idx['rec']])]
     for i, (l, v) in enumerate(infos):
         with [c1, c2, c3][i % 3]: st.markdown(f'<div class="info-card"><small>{l}</small><br><b>{v}</b></div>', unsafe_allow_html=True)
@@ -123,7 +121,7 @@ if st.session_state.bk_focus is not None:
         user_input = st.text_area("内容", value=st.session_state.temp_comment, key=input_key)
         
         cb1, cb2, _ = st.columns([1, 1, 4])
-        if cb1.form_submit_button("保存" if is_editing else "发布"):
+        if cb1.form_submit_button("发布" if not is_editing else "保存"):
             if user_input.strip():
                 if title_key not in st.session_state.comments: st.session_state.comments[title_key] = []
                 new_entry = {"text": user_input, "time": datetime.now().strftime("%Y-%m-%d %H:%M")}
@@ -136,8 +134,7 @@ if st.session_state.bk_focus is not None:
                 st.session_state.temp_comment = ""
                 st.session_state.form_version += 1
                 st.rerun()
-            else:
-                st.warning("内容不能为空")
+            else: st.warning("内容不能为空")
 
         if is_editing:
             if cb2.form_submit_button("❌ 取消"):
@@ -147,7 +144,7 @@ if st.session_state.bk_focus is not None:
                 st.rerun()
 
 # ==========================================
-# 4. 主视图 (侧边栏检索与三大标签页)
+# 4. 主视图
 # ==========================================
 elif not df.empty:
     with st.sidebar:
@@ -163,20 +160,19 @@ elif not df.empty:
         f_series = st.text_input("🔗 系列 (Series)")
         f_topic = st.text_input("🏷️ 主题 (Topic)")
         st.write("---")
-        f_ar = st.slider("📊 AR Level 范围", 0.0, 12.0, (0.0, 12.0))
+        # 此处修正标签 2
+        f_ar = st.slider("📊 ATOS Book Level 范围", 0.0, 12.0, (0.0, 12.0))
 
-    # 过滤逻辑
     f_df = df.copy()
-    if f_fuzzy:
-        f_df = f_df[f_df.apply(lambda r: f_fuzzy.lower() in str(r.values).lower(), axis=1)]
+    if f_fuzzy: f_df = f_df[f_df.apply(lambda r: f_fuzzy.lower() in str(r.values).lower(), axis=1)]
     if f_title: f_df = f_df[f_df.iloc[:, idx['title']].astype(str).str.contains(f_title, case=False)]
     if f_author: f_df = f_df[f_df.iloc[:, idx['author']].astype(str).str.contains(f_author, case=False)]
     if f_fnf != "全部": f_df = f_df[f_df.iloc[:, idx['fnf']] == f_fnf]
-    if f_il != "全部": f_df = f_df[f_df.iloc[:, idx['il']] == f_il]
+    if f_il != "全部": f_df = f_df[f_il == f_df.iloc[:, idx['il']]]
     if f_quiz: f_df = f_df[f_df.iloc[:, idx['quiz']].astype(str).str.contains(f_quiz)]
     if f_series: f_df = f_df[f_df.iloc[:, idx['series']].astype(str).str.contains(f_series, case=False)]
     if f_topic: f_df = f_df[f_df.iloc[:, idx['topic']].astype(str).str.contains(f_topic, case=False)]
-    f_df = f_df[(f_df.iloc[:, idx['word']] >= f_word) & (f_df.iloc[:, idx['ar']] >= f_ar[0]) & (f_df.iloc[:, idx['ar']] <= f_ar[1])]
+    f_df = f_df[(f_df.iloc[:, idx['ar']] >= f_ar[0]) & (f_df.iloc[:, idx['ar']] <= f_ar[1]) & (f_df.iloc[:, idx['word']] >= f_word)]
 
     tab1, tab2, tab3 = st.tabs(["📚 图书海报墙", "📊 分级分布统计", "🏆 读者高赞榜单"])
     
@@ -201,10 +197,10 @@ elif not df.empty:
                     <div class="tile-title">《{t}》</div>
                     <div style="color:#666; font-size:0.85em; margin-bottom:10px;">{row.iloc[idx["author"]]}</div>
                     <div class="tag-container">
-                        <span class="tag tag-ar">AR {row.iloc[idx["ar"]]}</span>
+                        <span class="tag tag-ar">ATOS {row.iloc[idx["ar"]]}</span>
                         <span class="tag tag-word">{row.iloc[idx["word"]]:,} 字</span>
                         <span class="tag tag-fnf">{row.iloc[idx["fnf"]]}</span>
-                        <span class="tag tag-quiz">#{row.iloc[idx["quiz"]]}</span>
+                        <span class="tag tag-quiz">Quiz No. {row.iloc[idx["quiz"]]}</span>
                     </div>
                 </div>
                 """, unsafe_allow_html=True)
@@ -217,7 +213,8 @@ elif not df.empty:
                     st.session_state.bk_focus = orig_idx; st.rerun()
 
     with tab2:
-        st.subheader("📊 AR 分级数据分布")
+        # 此处修正标签 3
+        st.subheader("📊 ATOS Book Level 数据分布")
         if not f_df.empty:
             ar_counts = f_df.iloc[:, idx['ar']].value_counts().sort_index()
             st.bar_chart(ar_counts)
@@ -226,17 +223,12 @@ elif not df.empty:
     with tab3:
         st.subheader("🏆 您最喜爱的图书")
         if st.session_state.voted:
-            # 建立书名到行号的快速索引，确保点赞榜能直接跳转
             title_to_idx = {str(row.iloc[idx['title']]): i for i, row in df.iterrows()}
-            
             for b_name in st.session_state.voted:
                 col_n, col_b = st.columns([3, 1])
-                with col_n:
-                    st.markdown(f"⭐ **{b_name}**")
+                with col_n: st.markdown(f"⭐ **{b_name}**")
                 with col_b:
                     if b_name in title_to_idx:
                         if st.button("查看详情", key=f"fav_{b_name}"):
-                            st.session_state.bk_focus = title_to_idx[b_name]
-                            st.rerun()
-        else:
-            st.info("暂无收藏记录，快去点击 ❤️ 吧！")
+                            st.session_state.bk_focus = title_to_idx[b_name]; st.rerun()
+        else: st.info("暂无收藏记录，快去点击 ❤️ 吧！")
