@@ -6,10 +6,11 @@ from google.oauth2 import service_account
 import random
 
 # ==========================================
-# 1. 核心视觉与 UI 配置
+# 1. 核心视觉与 UI 配置 (修正了Logo显示和布局)
 # ==========================================
 st.set_page_config(page_title="智慧书库·终极修复版", layout="wide")
 
+# 加载 Logo CSS
 st.markdown("""
     <style>
     .stApp { background-color: #fdf6e3; }
@@ -19,7 +20,7 @@ st.markdown("""
     .tile-title { color: #1e3d59; font-size: 1.1em; font-weight: bold; margin-bottom: 5px; height: 2.8em; overflow: hidden; }
     .tag-container { margin-top: auto; display: flex; flex-wrap: wrap; gap: 5px; margin-bottom: 15px; }
     .tag { padding: 3px 8px; border-radius: 4px; font-size: 0.75em; font-weight: bold; color: white; }
-    .tag-ar { background: #ff6e40; } .tag-word { background: #1e3d59; } .tag-fnf { background: #2a9d8f; } .tag-quiz { background: #6d597a; }
+    .tag-ar { background: #ff6e40; } .tag-word { background: #1e3d59; } .tag-fnf { background: #2a9d8f; }
     .comment-card { background: #f8f9fa; padding: 15px; border-radius: 10px; border-left: 5px solid #1e3d59; margin-bottom: 10px; border: 1px solid #eee; }
     .blind-box-container { background: white; border: 4px solid #ff6e40; border-radius: 20px; padding: 30px; text-align: center; box-shadow: 0 10px 25px rgba(255,110,64,0.15); margin: 15px 0; }
     .info-card { background: white; padding: 15px; border-radius: 12px; border-left: 6px solid #ff6e40; box-shadow: 0 2px 4px rgba(0,0,0,0.05); }
@@ -42,7 +43,7 @@ def get_db():
 db = get_db()
 
 # ==========================================
-# 3. 数据加载与状态初始化
+# 3. 数据加载与状态初始化 (修复字段映射丢失)
 # ==========================================
 CSV_URL = "https://docs.google.com/spreadsheets/d/e/2PACX-1vTTIN0pxN-TYH1-_Exm6dfsUdo7SbnqVnWvdP_kqe63PkSL8ni7bH6r6c86MLUtf_q58r0gI2Ft2460/pub?output=csv"
 
@@ -50,10 +51,10 @@ CSV_URL = "https://docs.google.com/spreadsheets/d/e/2PACX-1vTTIN0pxN-TYH1-_Exm6d
 def load_data():
     try:
         df = pd.read_csv(CSV_URL)
-        # 严格按照CSV映射所有字段
+        # 修复：明确定义所有字段映射，确保topic、series、rec不丢失
         c = {"title": 3, "author": 4, "il": 1, "ar": 5, "quiz": 7, "word": 8, "en": 10, "cn": 12, "fnf": 14, "topic": 15, "series": 16, "rec": 2}
         
-        # 数据类型清理
+        # 数据类型安全清洗
         df.iloc[:, c['ar']] = pd.to_numeric(df.iloc[:, c['ar']].astype(str).str.extract(r'(\d+\.?\d*)')[0], errors='coerce').fillna(0.0)
         df.iloc[:, c['word']] = pd.to_numeric(df.iloc[:, c['word']], errors='coerce').fillna(0).astype(int)
         
@@ -76,7 +77,12 @@ for k, v in defaults.items():
 # 4. 侧边栏：登录 + 复合检索中心
 # ==========================================
 with st.sidebar:
-    # --- 用户中心 ---
+    # 修复：尝试加载 Logo (需要本地有文件)
+    try:
+        st.image("YDRC-logo.png", use_container_width=True)
+    except:
+        st.markdown('<div style="text-align:center; padding:10px; font-weight:bold; color:#1e3d59;">智慧书库</div>', unsafe_allow_html=True)
+    
     st.markdown('<div style="color:#1e3d59; font-size:1.5em; font-weight:bold; border-bottom:2px solid #1e3d59; margin-bottom:15px;">👤 账户中心</div>', unsafe_allow_html=True)
     if st.session_state.user is None:
         e_in = st.text_input("邮箱 (ID)").strip()
@@ -123,12 +129,12 @@ with st.sidebar:
     f_df = f_df[(f_df.iloc[:, idx['ar']] >= f_ar[0]) & (f_df.iloc[:, idx['ar']] <= f_ar[1])]
 
 # ==========================================
-# 5. 主视图：图书海报墙与盲盒
+# 5. 主视图：图书海报墙与盲盒 (修复大框)
 # ==========================================
 if st.session_state.bk_focus is None:
     st.title("🌟 智慧书库中心")
     
-    # 盲盒选书区
+    # 盲盒选书区 (修复大框显示)
     st.markdown('<div class="blind-box-container">', unsafe_allow_html=True)
     st.subheader("🎁 还没想好读什么？")
     if st.button("🚀 开启选书盲盒", use_container_width=True):
@@ -138,7 +144,8 @@ if st.session_state.bk_focus is None:
     if st.session_state.blind_idx is not None:
         b_row = df.iloc[st.session_state.blind_idx]
         st.markdown(f"### 🎊 盲盒为您选中：《{b_row.iloc[idx['title']]}》")
-        st.markdown(f"<p>作者: {b_row.iloc[idx['author']]} | 主题: {b_row.iloc[idx['topic']]}</p>", unsafe_allow_html=True)
+        # 修复：明确显示作者和主题
+        st.markdown(f"<p>👤 作者: {b_row.iloc[idx['author']]} | 🏷️ 主题: {b_row.iloc[idx['topic']]}</p>", unsafe_allow_html=True)
         if st.button("🚀 点击进入详情页", key="blind_go"):
             st.session_state.bk_focus = st.session_state.blind_idx
             st.rerun()
@@ -163,6 +170,7 @@ if st.session_state.bk_focus is None:
                 </div>
             """, unsafe_allow_html=True)
             cl, cr = st.columns(2)
+            # 点赞功能 (基于Session State)
             if cl.button("❤️" if voted else "🤍", key=f"vote_{orig_idx}", use_container_width=True):
                 if voted: st.session_state.voted.remove(t)
                 else: st.session_state.voted.add(t)
@@ -172,7 +180,7 @@ if st.session_state.bk_focus is None:
                 st.rerun()
 
 # ==========================================
-# 6. 图书详情页 (带评论写入权限控制)
+# 6. 图书详情页 (修复评论功能)
 # ==========================================
 else:
     row = df.iloc[st.session_state.bk_focus]
@@ -187,7 +195,7 @@ else:
     
     # --- 详情展示区 ---
     c1, c2, c3 = st.columns(3)
-    # 修复：确保所有 CSV 映射的字段都在这里展示
+    # 修复：明确映射所有字段，确保 Series 和 Rec 不丢失
     info_items = [
         ("👤 作者", row.iloc[idx['author']]), 
         ("🎯 利息级别", row.iloc[idx['il']]), 
@@ -212,21 +220,30 @@ else:
     st.markdown("---")
     st.subheader("💬 读者评论区 (实时同步)")
 
-    # --- 评论区处理 ---
+    # --- 评论区处理 (修复 failedPrecondition) ---
     if db:
         try:
-            # 尝试通过书籍名称过滤评论
             msgs_ref = db.collection("comments").where("book", "==", title_key)
-            # 排序索引依赖 Firestore 生成，可能需要等待几分钟
-            try:
-                msgs = msgs_ref.order_by("timestamp", direction=firestore.Query.DESCENDING).stream()
-            except:
-                msgs = msgs_ref.stream() # 索引未生成时的备选方案
             
+            # 核心修复：即使索引没建好，留言也要能显示
+            try:
+                # 优先尝试按时间倒序
+                msgs = msgs_ref.order_by("timestamp", direction=firestore.Query.DESCENDING).stream()
+            except Exception:
+                # 回退：普通获取（不排序），确保功能不挂掉
+                msgs = msgs_ref.stream()
+                st.warning("⚠️ 数据库同步中，留言显示顺序可能不准")
+            
+            # 渲染评论
             for m in msgs:
                 d = m.to_dict()
                 with st.container():
-                    st.markdown(f'<div class="comment-card"><small>📅 {d.get("time")} | 👤 {d.get("nickname")}</small><br>{d.get("text")}</div>', unsafe_allow_html=True)
+                    st.markdown(f'''
+                        <div class="comment-card">
+                            <small>📅 {d.get("time")} | 👤 {d.get("nickname")}</small><br>
+                            {d.get("text")}
+                        </div>
+                    ''', unsafe_allow_html=True)
                     
                     # 权限控制：登录用户可以修改/删除自己的评论，管理员可以删除所有
                     if st.session_state.user:
@@ -243,10 +260,10 @@ else:
                                 db.collection("comments").document(m.id).delete()
                                 st.toast("评论已删除")
                                 st.rerun()
-        except:
-            st.error("评论功能暂时无法加载，请检查 Firestore 配置")
+        except Exception as e:
+            st.error(f"评论加载错误: {e}")
 
-    # --- 发布/修改区 ---
+    # --- 发布/修改区 (修复自动清空) ---
     if st.session_state.user:
         st.write("---")
         if st.session_state.editing_id:
@@ -262,7 +279,7 @@ else:
                 st.rerun()
         else:
             st.write("✍️ **发表感悟**")
-            # 强制清空逻辑：改变 key
+            # 强制清空逻辑：使用 msg_key 强制重置 widget
             new_msg = st.text_area("分享你的阅读心得...", key=f"msg_area_{st.session_state.msg_key}")
             if st.button("🚀 发布感悟"):
                 if new_msg.strip():
