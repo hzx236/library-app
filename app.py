@@ -1,11 +1,12 @@
 import streamlit as st
 import pandas as pd
 from datetime import datetime
+from google.cloud import firestore
+from google.oauth2 import service_account
 import json
-import os
 
 # ==========================================
-# 1. 样式与视觉配置
+# 1. 样式与视觉配置 (完全保留原有设计)
 # ==========================================
 st.set_page_config(page_title="智慧书库·全能旗舰版", layout="wide")
 
@@ -34,12 +35,40 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 # ==========================================
-# 2. 数据引擎
+# 2. 数据库与数据引擎
 # ==========================================
-CSV_URL = "https://docs.google.com/spreadsheets/d/e/2PACX-1vTTIN0pxN-TYH1-_Exm6dfsUdo7SbnqVnWvdP_kqe63PkSL8ni7bH6r6c86MLUtf_q58r0gI2Ft2460/pub?output=csv"
-COMMENTS_FILE = "comments.json"
 
-@st.cache_data(ttl=1)
+# --- Firestore 连接 (替换原本的本地 JSON 逻辑) ---
+@st.cache_resource
+def get_db_client():
+    key_dict = st.secrets["firestore"]
+    creds = service_account.Credentials.from_service_account_info(key_dict)
+    return firestore.Client(credentials=creds, project=key_dict["project_id"])
+
+db = get_db_client()
+
+def load_db_comments(book_title):
+    """从云端读取留言"""
+    docs = db.collection("comments").where("book", "==", book_title).order_by("timestamp", direction=firestore.Query.DESCENDING).stream()
+    return [{"id": d.id, **d.to_dict()} for d in docs]
+
+def save_db_comment(book_title, text, comment_id=None):
+    """保存或更新云端留言"""
+    data = {
+        "book": book_title,
+        "text": text,
+        "time": datetime.now().strftime("%Y-%m-%d %H:%M"),
+        "timestamp": firestore.SERVER_TIMESTAMP
+    }
+    if comment_id:
+        db.collection("comments").document(comment_id).update(data)
+    else:
+        db.collection("comments").add(data)
+
+# --- 图书数据加载 ---
+CSV_URL = "https://docs.google.com/spreadsheets/d/e/2PACX-1vTTIN0pxN-TYH1-_Exm6dfsUdo7SbnqVnWvdP_kqe63PkSL8ni7bH6r6c86MLUtf_q58r0gI2Ft2460/pub?output=csv"
+
+@st.cache_data(ttl=600) # 提高 TTL 增加稳定性
 def load_data():
     try:
         df = pd.read_csv(CSV_URL)
@@ -49,23 +78,12 @@ def load_data():
         return df.fillna(" "), c
     except: return pd.DataFrame(), {}
 
-def load_local_comments():
-    if os.path.exists(COMMENTS_FILE):
-        with open(COMMENTS_FILE, 'r', encoding='utf-8') as f:
-            return json.load(f)
-    return {}
-
-def save_local_comments(comments):
-    with open(COMMENTS_FILE, 'w', encoding='utf-8') as f:
-        json.dump(comments, f, ensure_ascii=False, indent=4)
-
 df, idx = load_data()
 
 # 初始化状态
-for key in ['bk_focus', 'lang_mode', 'likes', 'voted', 'comments', 'edit_id', 'blind_idx', 'temp_comment', 'form_version']:
+for key in ['bk_focus', 'lang_mode', 'voted', 'edit_id', 'edit_doc_id', 'blind_idx', 'temp_comment', 'form_version']:
     if key not in st.session_state:
         if key == 'lang_mode': st.session_state[key] = "CN"
-        elif key == 'comments': st.session_state[key] = load_local_comments()
         elif key == 'voted': st.session_state[key] = set()
         elif key == 'temp_comment': st.session_state[key] = ""
         elif key == 'form_version': st.session_state[key] = 0 
@@ -81,6 +99,7 @@ if st.session_state.bk_focus is not None:
     if st.button("⬅️ 返回图书墙"): 
         st.session_state.bk_focus = None
         st.session_state.edit_id = None
+        st.session_state.edit_doc_id = None
         st.session_state.temp_comment = ""
         st.rerun()
     
@@ -102,15 +121,18 @@ if st.session_state.bk_focus is not None:
     st.markdown("---")
     st.subheader("💬 读者感悟")
     
-    if title_key in st.session_state.comments:
-        for i, m in enumerate(st.session_state.comments[title_key]):
-            st.markdown(f'<div class="comment-box"><small>📅 {m["time"]}</small><br>{m["text"]}</div>', unsafe_allow_html=True)
-            if st.session_state.edit_id is None:
-                if st.button(f"✏️ 修改", key=f"e_btn_{i}"):
-                    st.session_state.edit_id = i
-                    st.session_state.temp_comment = m["text"]
-                    st.session_state.form_version += 1
-                    st.rerun()
+    # 从 Firestore 加载云端留言
+    cloud_comments = load_db_comments(title_key)
+    
+    for i, m in enumerate(cloud_comments):
+        st.markdown(f'<div class="comment-box"><small>📅 {m["time"]}</small><br>{m["text"]}</div>', unsafe_allow_html=True)
+        if st.session_state.edit_id is None:
+            if st.button(f"✏️ 修改", key=f"e_btn_{i}"):
+                st.session_state.edit_id = i
+                st.session_state.edit_doc_id = m["id"] # 记录数据库文档 ID
+                st.session_state.temp_comment = m["text"]
+                st.session_state.form_version += 1
+                st.rerun()
 
     is_editing = st.session_state.edit_id is not None
     input_key = f"input_area_v{st.session_state.form_version}"
@@ -122,14 +144,10 @@ if st.session_state.bk_focus is not None:
         cb1, cb2, _ = st.columns([1, 1, 4])
         if cb1.form_submit_button("发布" if not is_editing else "保存"):
             if user_input.strip():
-                if title_key not in st.session_state.comments: st.session_state.comments[title_key] = []
-                new_entry = {"text": user_input, "time": datetime.now().strftime("%Y-%m-%d %H:%M")}
-                if is_editing:
-                    st.session_state.comments[title_key][st.session_state.edit_id] = new_entry
-                    st.session_state.edit_id = None
-                else:
-                    st.session_state.comments[title_key].append(new_entry)
-                save_local_comments(st.session_state.comments)
+                # 调用云端保存函数
+                save_db_comment(title_key, user_input, st.session_state.get('edit_doc_id'))
+                st.session_state.edit_id = None
+                st.session_state.edit_doc_id = None
                 st.session_state.temp_comment = ""
                 st.session_state.form_version += 1
                 st.rerun()
@@ -138,6 +156,7 @@ if st.session_state.bk_focus is not None:
         if is_editing:
             if cb2.form_submit_button("❌ 取消"):
                 st.session_state.edit_id = None
+                st.session_state.edit_doc_id = None
                 st.session_state.temp_comment = ""
                 st.session_state.form_version += 1 
                 st.rerun()
@@ -147,12 +166,10 @@ if st.session_state.bk_focus is not None:
 # ==========================================
 elif not df.empty:
     with st.sidebar:
-        # --- 已经改为 YDRC-logo.png ---
         try:
             st.image("YDRC-logo.png", use_container_width=True)
         except:
             pass 
-        # -----------------------------
         
         st.markdown('<div class="sidebar-title">🔍 检索中心</div>', unsafe_allow_html=True)
         f_fuzzy = st.text_input("💡 **智能模糊检索**", placeholder="输入关键词...")
