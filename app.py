@@ -1,7 +1,8 @@
 import streamlit as st
 import pandas as pd
-import random
 from datetime import datetime
+import random
+# 注意：以下库需要安装: pip install google-cloud-firestore
 from google.cloud import firestore
 from google.oauth2 import service_account
 
@@ -17,7 +18,7 @@ st.markdown("""
         background: white; padding: 25px; border-radius: 12px; border: 1px solid #e2d1b0;
         box-shadow: 0 4px 6px rgba(0,0,0,0.05); min-height: 420px; display: flex; flex-direction: column;
     }
-    .tile-title { color: #1e3d59; font-size: 1.2em; font-weight: bold; margin-bottom: 15px; height: 3.2em; overflow: hidden; }
+    .tile-title { color: #1e3d59; font-size: 1.2em; font-weight: bold; margin-bottom: 15px; height: 3em; overflow: hidden; }
     .tag-container { margin-top: auto; display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 20px; }
     .tag { padding: 4px 10px; border-radius: 6px; font-size: 0.85em; font-weight: bold; color: white; }
     .tag-ar { background: #ff6e40; } .tag-word { background: #1e3d59; } .tag-fnf { background: #2a9d8f; } .tag-quiz { background: #457b9d; }
@@ -26,12 +27,40 @@ st.markdown("""
         box-shadow: 0 10px 30px rgba(255,110,64,0.1); margin: 20px 0;
     }
     .detail-card { background:white; padding:15px; border-radius:10px; border-left:5px solid #ff6e40; margin-bottom:10px; min-height:80px; }
+    .comment-card { background:white; padding:15px; border-radius:10px; border-left:5px solid #2a9d8f; margin-bottom:10px; }
     </style>
 """, unsafe_allow_html=True)
 
 # ==========================================
-# 2. 数据加载
+# 2. 数据库与数据加载 (Firebase 初始化)
 # ==========================================
+@st.cache_resource
+def get_db():
+    try:
+        # 注意：这里需要您在 Streamlit Secrets 中配置 firestore 密钥
+        key_dict = st.secrets["firestore"]
+        creds = service_account.Credentials.from_service_account_info(key_dict)
+        return firestore.Client(credentials=creds, project=key_dict["project_id"])
+    except: return None
+
+db = get_db()
+
+def load_comments(book_title):
+    if not db: return []
+    docs = db.collection("comments").where("book_title", "==", book_title).order_by("timestamp", direction=firestore.Query.DESCENDING).stream()
+    return [doc.to_dict() for doc in docs]
+
+def save_comment(book_title, name, email, comment):
+    if not db: return
+    db.collection("comments").add({
+        "book_title": book_title,
+        "name": name,
+        "email": email,
+        "comment": comment,
+        "timestamp": firestore.SERVER_TIMESTAMP,
+        "time_str": datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    })
+
 CSV_URL = "https://docs.google.com/spreadsheets/d/e/2PACX-1vTTIN0pxN-TYH1-_Exm6dfsUdo7SbnqVnWvdP_kqe63PkSL8ni7bH6r6c86MLUtf_q58r0gI2Ft2460/pub?output=csv"
 
 @st.cache_data(ttl=600)
@@ -62,19 +91,27 @@ if 'do_balloons' not in st.session_state: st.session_state.do_balloons = False
 # ==========================================
 if st.session_state.do_balloons:
     st.balloons()
-    st.session_state.do_balloons = False # 喷完立即重置
+    st.session_state.do_balloons = False 
 
 # ==========================================
 # 5. 左侧检索栏 (对齐所有截图项)
 # ==========================================
 with st.sidebar:
+    st.markdown("### 🔐 身份管理")
+    with st.expander("用户登记", expanded=True):
+        if st.session_state.user:
+            st.success(f"已登记: {st.session_state.user['name']}")
+        else:
+            st.info("登记昵称以发表留言")
+    
+    st.write("---")
     st.markdown("### 🔍 全能检索栏")
     f_fuzzy = st.text_input("💡 智能模糊搜索")
     f_title = st.text_input("📖 书名 (Title)")
     f_author = st.text_input("👤 作者 (Author)")
-    f_topic = st.text_input("🏷️ Topic - Subtopic (手动输入)")
-    f_series = st.text_input("📺 Series 系列 (手动输入)")
-    f_quiz = st.text_input("🔢 AR Quiz Number (手动输入)")
+    f_topic = st.text_input("🏷️ Topic - Subtopic")
+    f_series = st.text_input("📺 Series 系列")
+    f_quiz = st.text_input("🔢 AR Quiz Number")
     f_fnf = st.selectbox("📚 类型", ["全部", "Fiction", "Nonfiction"])
     f_il = st.selectbox("🎯 Interest Level", ["全部", "LG", "MG", "MG+", "UG"])
     f_word_min = st.number_input("📝 最小词数", min_value=0, step=500)
@@ -126,39 +163,73 @@ if st.session_state.bk_focus is not None:
     if sc2.button("中文理由"): st.session_state.lang_mode = "CN"; st.rerun()
     
     content = row.iloc[idx['en']] if st.session_state.lang_mode == "EN" else row.iloc[idx['cn']]
-    st.markdown(f'<div style="background:#fffcf5; padding:25px; border-radius:15px; border:1px dashed #ff6e40;">{content}</div>', unsafe_allow_html=True)
+    st.markdown(f'<div style="background:#fffcf5; padding:25px; border-radius:15px; border:1px dashed #ff6e40; min-height:150px;">{content}</div>', unsafe_allow_html=True)
+
+    # 📢 修复截图中的语法错误并实现留言板
+    st.write("---")
+    st.subheader("💬 读者感悟留言板")
+    
+    if st.session_state.user is None:
+        with st.expander("📝 发表留言前请先登记", expanded=True):
+            with st.form("reg_form"):
+                name = st.text_input("昵称")
+                email = st.text_input("邮箱 (选填)")
+                if st.form_submit_button("保存登记"):
+                    if name:
+                        st.session_state.user = {'name': name, 'email': email}
+                        st.rerun()
+    else:
+        # 修复截图 image_aea9c4.png 中的 SyntaxError
+        st.write(f"当前用户: **{st.session_state.user['name']}**")
+        with st.form("comment_form", clear_on_submit=True):
+            comment = st.text_area(f"✍️ 以 {st.session_state.user['name']} 的身份发表感悟：")
+            if st.form_submit_button("发布感悟"):
+                if comment:
+                    save_comment(title_key, st.session_state.user['name'], st.session_state.user['email'], comment)
+                    st.success("发布成功！")
+                    st.rerun()
+
+    # 显示留言历史
+    comments = load_comments(title_key)
+    for c in comments:
+        st.markdown(f"""
+        <div class="comment-card">
+            <b>{c['name']}</b> <small style="color:gray;">{c['time_str']}</small><br>
+            <p>{c['comment']}</p>
+        </div>
+        """, unsafe_allow_html=True)
 
 # ==========================================
-# 7. 主视图 (气球盲盒 + 带详情按钮的收藏夹)
+# 7. 主视图
 # ==========================================
 else:
     tab1, tab2, tab3 = st.tabs(["📚 图书海报墙", "📊 数据分布", "❤️ 收藏清单"])
     
     with tab1:
         # 盲盒区
-        if st.button("🎁 开启选书盲盒", use_container_width=True):
+        if st.button("🎁 开启随机选书盲盒 (惊喜跳转)", use_container_width=True):
             if not f_df.empty:
                 st.session_state.blind_pick = random.choice(f_df.index)
-                st.session_state.do_balloons = True # 标记触发气球
+                st.session_state.do_balloons = True 
                 st.rerun()
 
         if st.session_state.blind_pick is not None:
             b_row = df.iloc[st.session_state.blind_pick]
             st.markdown(f"""
             <div class="blind-box-card">
-                <h3>🎈 气球盲盒抽中：《{b_row.iloc[idx['title']]}》</h3>
+                <h3>🎉 盲盒抽中：《{b_row.iloc[idx['title']]}》</h3>
                 <p>作者：{b_row.iloc[idx['author']]} | AR Quiz Number：{b_row.iloc[idx['quiz']]}</p>
             </div>
             """, unsafe_allow_html=True)
             bc1, bc2, bc3 = st.columns(3)
             if bc1.button("🔄 换一个"): 
                 st.session_state.blind_pick = random.choice(f_df.index)
-                st.session_state.do_balloons = True # 换一个也要有气球！
+                st.session_state.do_balloons = True 
                 st.rerun()
             if bc2.button("📖 进入详细页", type="primary"): 
                 st.session_state.bk_focus = st.session_state.blind_pick
                 st.rerun()
-            if bc3.button("❌ 关闭"): 
+            if bc3.button("❌ 关闭盲盒"): 
                 st.session_state.blind_pick = None
                 st.rerun()
 
@@ -176,7 +247,7 @@ else:
                         <span class="tag tag-ar">ATOS {row.iloc[idx['ar']]}</span>
                         <span class="tag tag-word">{row.iloc[idx['word']]:,} 字</span>
                         <span class="tag tag-fnf">{row.iloc[idx['fnf']]}</span>
-                        <span class="tag tag-quiz">AR Quiz Number {row.iloc[idx['quiz']]}</span>
+                        <span class="tag tag-quiz">Q#{row.iloc[idx['quiz']]}</span>
                     </div>
                 </div>
                 """, unsafe_allow_html=True)
@@ -197,7 +268,6 @@ else:
             for title, o_idx in st.session_state.voted.items():
                 col_t, col_b = st.columns([4,1])
                 col_t.markdown(f"📖 **{title}**")
-                # 补全：收藏页进入详情的按钮
-                if col_b.button("进入详情", key=f"fav_goto_{o_idx}"):
+                if col_b.button("详情", key=f"fav_goto_{o_idx}"):
                     st.session_state.bk_focus = o_idx
                     st.rerun()
