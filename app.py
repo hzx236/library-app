@@ -56,7 +56,8 @@ def get_db_client():
         creds = service_account.Credentials.from_service_account_info(key_dict)
         return firestore.Client(credentials=creds, project=key_dict["project_id"])
     except Exception as e:
-        st.error(f"数据库连接失败，请检查 Secrets 配置。错误: {e}")
+        # 本地测试时若无 secrets 可通过 try-except 避免直接报错，但在云端必须配置
+        st.error(f"数据库连接提示: {e}")
         return None
 
 db = get_db_client()
@@ -81,6 +82,7 @@ def validate_email(email):
 def get_user_role(email):
     """获取用户角色"""
     if db is None: return "guest"
+    # Owner 邮箱在 secrets 中配置
     if email == st.secrets.get("owner_email", ""):
         return "owner"
     
@@ -137,15 +139,37 @@ CSV_URL = "https://docs.google.com/spreadsheets/d/e/2PACX-1vTTIN0pxN-TYH1-_Exm6d
 def load_data():
     try:
         df = pd.read_csv(CSV_URL)
-        # 修正列索引：K=10 (英文), M=12 (中文)
+        # =========================================================
+        # 修正列索引映射 (基于0开始计数：A=0, B=1... K=10, M=12)
+        # =========================================================
         c = {
-            "title": 3, "author": 4, "il": 1, "ar": 5, "quiz": 7, 
-            "word": 8, "en": 10, "cn": 12, "fnf": 14, 
-            "topic": 15, "series": 16, "rec": 2
+            "il": 1,        # B列: Interest Level
+            "rec": 2,       # C列: 推荐人
+            "title": 3,     # D列: 书名
+            "author": 4,    # E列: 作者
+            "ar": 5,        # F列: ATOS
+            "quiz": 7,      # H列: Quiz No
+            "word": 8,      # I列: Word Count
+            "en": 10,       # K列: 英文推荐理由 (Index 10)
+            "cn": 12,       # M列: 中文推荐理由 (Index 12)
+            "fnf": 14,      # O列: Fiction/Nonfiction
+            "topic": 15,    # P列: Topic
+            "series": 16    # Q列: Series
         }
-        # 数据清洗
-        df.iloc[:, c['ar']] = pd.to_numeric(df.iloc[:, c['ar']].astype(str).str.extract(r'(\d+\.?\d*)')[0], errors='coerce').fillna(0.0)
-        df.iloc[:, c['word']] = pd.to_numeric(df.iloc[:, c['word']], errors='coerce').fillna(0).astype(int)
+        
+        # 数据清洗与类型转换
+        # 提取 AR 数字
+        df.iloc[:, c['ar']] = pd.to_numeric(
+            df.iloc[:, c['ar']].astype(str).str.extract(r'(\d+\.?\d*)')[0], 
+            errors='coerce'
+        ).fillna(0.0)
+        
+        # 转换词数为整数
+        df.iloc[:, c['word']] = pd.to_numeric(
+            df.iloc[:, c['word']], 
+            errors='coerce'
+        ).fillna(0).astype(int)
+        
         return df.fillna(" "), c
     except Exception as e:
         st.error(f"数据加载失败: {e}")
@@ -226,8 +250,11 @@ with st.sidebar:
                 new_role = st.selectbox("设置角色", ["user", "admin"])
                 if st.button("更新权限"):
                     if db:
-                        db.collection("users").document(manage_email).update({"role": new_role})
-                        st.success(f"已将 {manage_email} 设为 {new_role}")
+                        try:
+                            db.collection("users").document(manage_email).update({"role": new_role})
+                            st.success(f"已将 {manage_email} 设为 {new_role}")
+                        except Exception as e:
+                            st.error(f"更新失败: {e}")
 
     st.write("---")
     st.markdown('<div class="sidebar-title">🔍 检索中心</div>', unsafe_allow_html=True)
@@ -242,6 +269,7 @@ def load_db_comments(book_title):
         col_ref = db.collection("comments").where("book", "==", book_title)
         docs = col_ref.stream()
         comments = [{"id": d.id, **d.to_dict()} for d in docs]
+        # 按时间排序
         return sorted(comments, key=lambda x: x.get('timestamp', str(datetime.now())), reverse=True)
     except: return []
 
@@ -255,16 +283,22 @@ def save_db_comment(book_title, text, comment_id=None):
         "time": datetime.now().strftime("%Y-%m-%d %H:%M"),
         "timestamp": firestore.SERVER_TIMESTAMP
     }
-    if comment_id:
-        db.collection("comments").document(comment_id).update({"text": text, "time": data["time"]})
-    else:
-        db.collection("comments").add(data)
-    st.toast("✅ 留言已发布", icon='☁️')
+    try:
+        if comment_id:
+            db.collection("comments").document(comment_id).update({"text": text, "time": data["time"]})
+        else:
+            db.collection("comments").add(data)
+        st.toast("✅ 留言已发布", icon='☁️')
+    except Exception as e:
+        st.error(f"保存失败: {e}")
 
 def delete_comment(comment_id):
     if db:
-        db.collection("comments").document(comment_id).delete()
-        st.toast("🗑️ 留言已删除")
+        try:
+            db.collection("comments").document(comment_id).delete()
+            st.toast("🗑️ 留言已删除")
+        except Exception as e:
+            st.error(f"删除失败: {e}")
 
 # ==========================================
 # 8. 图书详情页 (主逻辑)
@@ -293,7 +327,8 @@ if st.session_state.bk_focus is not None:
     lb1, lb2, _ = st.columns([1,1,2])
     if lb1.button("CN 中文理由", use_container_width=True): st.session_state.lang_mode = "CN"; st.rerun()
     if lb2.button("US English", use_container_width=True): st.session_state.lang_mode = "EN"; st.rerun()
-    # 根据 idx['cn'] (12) 和 idx['en'] (10) 获取内容
+    
+    # 根据 lang_mode 显示对应列内容
     content = row.iloc[idx["cn"]] if st.session_state.lang_mode=="CN" else row.iloc[idx["en"]]
     st.markdown(f'<div style="background:#fffcf5; padding:25px; border-radius:15px; border:2px dashed #ff6e40;">{content}</div>', unsafe_allow_html=True)
 
@@ -319,7 +354,8 @@ if st.session_state.bk_focus is not None:
         """, unsafe_allow_html=True)
         
         col_ops = st.columns([1, 1, 8])
-        # 只有登录用户且是本人才能修改
+        
+        # 按钮：修改 (仅本人)
         if st.session_state.logged_in and is_mine and st.session_state.edit_id is None:
             if col_ops[0].button("✏️", key=f"edit_{i}", help="修改留言"):
                 st.session_state.edit_id = i
@@ -328,13 +364,13 @@ if st.session_state.bk_focus is not None:
                 st.session_state.form_version += 1
                 st.rerun()
         
-        # 只有本人或管理员/Owner才能删除
+        # 按钮：删除 (本人或管理员)
         if st.session_state.logged_in and (is_mine or is_admin) and st.session_state.edit_id is None:
              if col_ops[1].button("🗑️", key=f"del_{i}", help="删除留言"):
                  delete_comment(m["id"])
                  st.rerun()
 
-    # 留言输入框 (仅限注册/登录用户)
+    # 留言输入框 (仅限注册/登录用户显示)
     if st.session_state.logged_in:
         is_editing = st.session_state.edit_id is not None
         input_key = f"input_area_v{st.session_state.form_version}"
@@ -359,6 +395,7 @@ if st.session_state.bk_focus is not None:
                 st.session_state.temp_comment = ""; st.session_state.form_version += 1
                 st.rerun()
     else:
+        # 游客提示
         st.info("🔒 游客模式仅供浏览。想发表感悟或参与互动？请在左侧注册或登录。")
 
 # ==========================================
@@ -380,6 +417,7 @@ elif not df.empty:
         st.write("---")
         f_ar = st.slider("📊 ATOS Book Level 范围", 0.0, 12.0, (0.0, 12.0))
 
+    # 筛选逻辑
     f_df = df.copy()
     if f_fuzzy: 
         f_df = f_df[f_df.apply(lambda r: f_fuzzy.lower() in str(r.values).lower(), axis=1)]
@@ -426,7 +464,10 @@ elif not df.empty:
                 """, unsafe_allow_html=True)
                 
                 cl, cr = st.columns(2)
-                # 修改点：移除了 st.session_state.logged_in 判断，所有用户（含游客）均可点赞
+                
+                # =====================================================
+                # 修改点：点赞按钮对所有用户（含游客）开放
+                # =====================================================
                 if cl.button("❤️" if voted else "🤍", key=f"h_{orig_idx}", use_container_width=True):
                     if voted: st.session_state.voted.remove(t)
                     else: st.session_state.voted.add(t)
