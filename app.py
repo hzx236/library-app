@@ -7,7 +7,7 @@ import hashlib
 import re
 
 # ==========================================
-# 1. 样式与配置
+# 1. 样式与配置 (完全原样)
 # ==========================================
 st.set_page_config(page_title="智慧书库·全能旗舰版", layout="wide", page_icon="📚")
 
@@ -34,7 +34,6 @@ st.markdown("""
     }
     .info-card { background: white; padding: 15px; border-radius: 12px; border-left: 6px solid #ff6e40; box-shadow: 0 2px 4px rgba(0,0,0,0.05); }
     
-    /* 登录状态指示 */
     .user-badge { padding: 5px 10px; border-radius: 15px; font-size: 0.8rem; font-weight: bold; margin-bottom: 10px; display: inline-block; }
     .badge-owner { background-color: #ffd700; color: #000; }
     .badge-admin { background-color: #ff6e40; color: #fff; }
@@ -44,7 +43,7 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 # ==========================================
-# 2. 数据库与安全工具
+# 2. 数据库与安全工具 (完全原样)
 # ==========================================
 
 @st.cache_resource
@@ -120,7 +119,8 @@ def login_user(email, password):
         doc = db.collection("users").document(email).get()
         if doc.exists:
             user_data = doc.to_dict()
-            if check_hashes(password, user_data['password']):
+            # 【修复点 1】：防止数据库中 password 字段缺失引发崩溃
+            if check_hashes(password, user_data.get('password', '')):
                 return user_data
             else:
                 st.error("密码错误")
@@ -131,7 +131,7 @@ def login_user(email, password):
     return None
 
 # ==========================================
-# 4. 数据加载 (Google Sheets)
+# 4. 数据加载 (Google Sheets - 完全原样)
 # ==========================================
 CSV_URL = "https://docs.google.com/spreadsheets/d/e/2PACX-1vTTIN0pxN-TYH1-_Exm6dfsUdo7SbnqVnWvdP_kqe63PkSL8ni7bH6r6c86MLUtf_q58r0gI2Ft2460/pub?output=csv"
 
@@ -178,7 +178,7 @@ def load_data():
 df, idx = load_data()
 
 # ==========================================
-# 5. 初始化 Session State
+# 5. 初始化 Session State (完全原样)
 # ==========================================
 state_keys = {
     'bk_focus': None, 'lang_mode': 'CN', 'voted': set(), 
@@ -211,9 +211,10 @@ with st.sidebar:
                 user_info = login_user(l_email, l_pass)
                 if user_info:
                     st.session_state.logged_in = True
-                    st.session_state.user_email = user_info['email']
-                    st.session_state.user_nickname = user_info['nickname']
-                    st.session_state.user_role = get_user_role(user_info['email']) 
+                    # 【修复点 2】：防止 KeyError: 'email'
+                    st.session_state.user_email = user_info.get('email', l_email)
+                    st.session_state.user_nickname = user_info.get('nickname', 'User')
+                    st.session_state.user_role = get_user_role(st.session_state.user_email) 
                     st.rerun()
 
         with auth_mode[1]: # 注册
@@ -226,9 +227,25 @@ with st.sidebar:
                         register_user(r_email, r_pass, r_nick)
                     else: st.warning("密码需至少6位")
                 else: st.warning("请输入有效邮箱")
+            
+            # --- 【核心修改：植入密码重置功能】 ---
+            st.write("---")
+            with st.expander("🔑 找回/重置密码"):
+                st.caption("验证 Project ID 以重置账号")
+                target_m = st.text_input("账号邮箱", key="t_m")
+                pid_key = st.text_input("Project ID 验证", type="password", help="在secrets中查看")
+                new_p = st.text_input("设置新密码", type="password", key="n_p")
+                if st.button("确认重置"):
+                    try:
+                        # 验证 Project ID 是否匹配
+                        if pid_key == st.secrets["firestore"]["project_id"]:
+                            db.collection("users").document(target_m).update({"password": make_hash(new_p)})
+                            st.success("✅ 重置成功！请登录。")
+                        else: st.error("❌ 验证密钥错误")
+                    except: st.error("重置失败，邮箱未注册")
 
     else:
-        # 已登录状态显示
+        # 已登录状态显示 (保持原样)
         role_badges = {"owner": "👑 Owner", "admin": "🛡️ Admin", "user": "👤 User"}
         role_cls = f"badge-{st.session_state.user_role}"
         st.markdown(f"""
@@ -243,7 +260,7 @@ with st.sidebar:
             st.session_state.user_role = "guest"
             st.rerun()
 
-        # --- Owner 专属管理面板 ---
+        # --- Owner 专属管理面板 (保持原样) ---
         if st.session_state.user_role == 'owner':
             with st.expander("⚙️ 权限管理 (Owner Only)"):
                 manage_email = st.text_input("输入用户邮箱")
@@ -260,7 +277,7 @@ with st.sidebar:
     st.markdown('<div class="sidebar-title">🔍 检索中心</div>', unsafe_allow_html=True)
 
 # ==========================================
-# 7. 评论功能逻辑
+# 7. 评论功能逻辑 (保持原样)
 # ==========================================
 
 def load_db_comments(book_title):
@@ -301,7 +318,7 @@ def delete_comment(comment_id):
             st.error(f"删除失败: {e}")
 
 # ==========================================
-# 8. 图书详情页 (主逻辑)
+# 8. 图书详情页 (主逻辑 - 保持原样)
 # ==========================================
 if st.session_state.bk_focus is not None:
     row = df.iloc[st.session_state.bk_focus]
@@ -399,7 +416,7 @@ if st.session_state.bk_focus is not None:
         st.info("🔒 游客模式仅供浏览。想发表感悟或参与互动？请在左侧注册或登录。")
 
 # ==========================================
-# 9. 主视图 (筛选与图书墙)
+# 9. 主视图 (筛选与图书墙 - 保持原样)
 # ==========================================
 elif not df.empty:
     with st.sidebar:
@@ -466,7 +483,7 @@ elif not df.empty:
                 cl, cr = st.columns(2)
                 
                 # =====================================================
-                # 修改点：点赞按钮对所有用户（含游客）开放
+                # 修改点：点赞按钮对所有用户（含游客）开放 (保持原样)
                 # =====================================================
                 if cl.button("❤️" if voted else "🤍", key=f"h_{orig_idx}", use_container_width=True):
                     if voted: st.session_state.voted.remove(t)
