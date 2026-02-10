@@ -6,40 +6,36 @@ from google.oauth2 import service_account
 import random
 
 # ==========================================
-# 1. 核心 UI 配置与 CSS 锁定
+# 1. 核心视觉与 CSS 配置
 # ==========================================
 st.set_page_config(page_title="YDRC 智慧书库", layout="wide")
-
 st.markdown("""
     <style>
     .stApp { background-color: #fdf6e3; }
-    .book-tile { background: white; padding: 20px; border-radius: 12px; border: 1px solid #e2d1b0; min-height: 350px; }
-    .info-card { background: white; padding: 12px; border-radius: 10px; border-left: 5px solid #ff6e40; box-shadow: 0 2px 4px rgba(0,0,0,0.05); }
+    .book-tile { background: white; padding: 20px; border-radius: 12px; border: 1px solid #e2d1b0; min-height: 250px; box-shadow: 0 2px 4px rgba(0,0,0,0.05); }
+    .info-card { background: white; padding: 12px; border-radius: 10px; border-left: 5px solid #ff6e40; box-shadow: 0 2px 4px rgba(0,0,0,0.05); margin-bottom: 10px; }
+    .blind-box-container { background: white; border: 4px solid #ff6e40; border-radius: 20px; padding: 30px; text-align: center; margin-bottom: 25px; }
     .comment-card { background: #f8f9fa; padding: 15px; border-radius: 10px; border-left: 5px solid #1e3d59; margin-bottom: 10px; }
-    .blind-box-container { background: white; border: 4px solid #ff6e40; border-radius: 20px; padding: 30px; text-align: center; }
     </style>
 """, unsafe_allow_html=True)
 
 # ==========================================
-# 2. 数据库连接 (带自检逻辑)
+# 2. 数据库连接
 # ==========================================
 @st.cache_resource
 def get_db():
     try:
-        if "firestore" not in st.secrets:
-            st.error("❌ 未在 Secrets 中找到 firestore 配置")
-            return None
-        key_dict = st.secrets["firestore"]
-        creds = service_account.Credentials.from_service_account_info(key_dict)
-        return firestore.Client(credentials=creds, project=key_dict["project_id"])
-    except Exception as e:
-        st.error(f"❌ 数据库初始化失败: {e}")
-        return None
+        if "firestore" in st.secrets:
+            key_dict = st.secrets["firestore"]
+            creds = service_account.Credentials.from_service_account_info(key_dict)
+            return firestore.Client(credentials=creds, project=key_dict["project_id"])
+    except: pass
+    return None
 
 db = get_db()
 
 # ==========================================
-# 3. 数据加载 (采用列名匹配，彻底解决字段丢失)
+# 3. 数据加载与状态初始化
 # ==========================================
 CSV_URL = "https://docs.google.com/spreadsheets/d/e/2PACX-1vTTIN0pxN-TYH1-_Exm6dfsUdo7SbnqVnWvdP_kqe63PkSL8ni7bH6r6c86MLUtf_q58r0gI2Ft2460/pub?output=csv"
 
@@ -47,151 +43,158 @@ CSV_URL = "https://docs.google.com/spreadsheets/d/e/2PACX-1vTTIN0pxN-TYH1-_Exm6d
 def load_data():
     try:
         df = pd.read_csv(CSV_URL)
-        # 清洗列名，去掉可能存在的空格
-        df.columns = [c.strip() for c in df.columns]
-        
-        # 强制类型转换，防止 AR 或词数报错
-        if 'AR' in df.columns:
-            df['AR'] = pd.to_numeric(df['AR'].astype(str).str.extract(r'(\d+\.?\d*)')[0], errors='coerce').fillna(0.0)
-        if 'WordsCount' in df.columns:
-            df['WordsCount'] = pd.to_numeric(df['WordsCount'], errors='coerce').fillna(0).astype(int)
-            
         return df.fillna(" ")
-    except Exception as e:
-        st.error(f"❌ CSV 数据加载失败: {e}")
-        return pd.DataFrame()
+    except: return pd.DataFrame()
 
-df = load_data()
+raw_df = load_data()
 
-# ==========================================
-# 4. 状态初始化
-# ==========================================
-if 'user' not in st.session_state: st.session_state.user = None
-if 'bk_focus' not in st.session_state: st.session_state.bk_focus = None
-if 'voted' not in st.session_state: st.session_state.voted = set()
-if 'blind_idx' not in st.session_state: st.session_state.blind_idx = None
+# 初始化所有核心 Session State
+defaults = {'user': None, 'bk_focus': None, 'blind_idx': None, 'lang': "CN", 'voted': set()}
+for k, v in defaults.items():
+    if k not in st.session_state: st.session_state[k] = v
 
 # ==========================================
-# 5. 侧边栏 (修复 Logo 和登录)
+# 4. 侧边栏：Logo + 登录 + 11个检索维度
 # ==========================================
 with st.sidebar:
-    # 自查：Logo 必须在最上方
-    try:
-        st.image("YDRC-logo.png", use_container_width=True)
-    except:
-        st.title("📚 YDRC 图书馆")
-
-    st.write("---")
+    # A. Logo
+    try: st.image("YDRC-logo.png", use_container_width=True)
+    except: st.header("YDRC Library")
+    
+    # B. 登录
     if st.session_state.user is None:
-        st.subheader("🔑 成员登录")
-        u_mail = st.text_input("邮箱/ID")
+        st.write("---")
+        u_mail = st.text_input("邮箱 (ID)")
         u_pwd = st.text_input("密码", type="password")
         if st.button("进入系统", use_container_width=True):
             if db:
                 doc = db.collection("users").document(u_mail).get()
-                if doc.exists and doc.to_dict().get("password") == u_pwd:
+                if doc.exists and str(doc.to_dict().get("password")) == u_pwd:
                     st.session_state.user = {**doc.to_dict(), "id": u_mail}
                     st.rerun()
-                else: st.error("账号或密码错误")
+                else: st.error("登录失败")
     else:
-        st.success(f"你好, {st.session_state.user.get('nickname', '读者')}")
-        if st.button("退出登录"):
-            st.session_state.user = None
-            st.rerun()
+        st.success(f"你好: {st.session_state.user.get('nickname')}")
+        if st.button("退出"): st.session_state.user = None; st.rerun()
+
+    # C. 全维度检索 (1 模糊 + 10 物理字段)
+    st.write("---")
+    st.subheader("🔍 检索中心")
+    s_fuzzy = st.text_input("💡 模糊搜索 (全表关键词)")
+    s_il = st.text_input("🎯 利息级别 (IL)")      # Index 1
+    s_rec = st.text_input("🙋 推荐人 (Rec)")      # Index 2
+    s_title = st.text_input("📖 书名 (Title)")    # Index 3
+    s_author = st.text_input("👤 作者 (Author)")  # Index 4
+    s_ar = st.text_input("📊 AR 难度")             # Index 5
+    s_quiz = st.text_input("🔢 测验编号 (Quiz)")   # Index 7
+    s_words = st.text_input("📝 词数 (Words)")    # Index 8
+    s_fnf = st.selectbox("📚 类型", ["全部", "Fiction", "Nonfiction"]) # Index 14
+    s_topic = st.text_input("🏷️ 主题 (Topic)")    # Index 15
+    s_series = st.text_input("🔗 系列 (Series)")  # Index 16
+
+    # 过滤执行
+    f_df = raw_df.copy()
+    if s_fuzzy: f_df = f_df[f_df.apply(lambda r: s_fuzzy.lower() in str(r.values).lower(), axis=1)]
+    if s_il: f_df = f_df[f_df.iloc[:, 1].astype(str).str.contains(s_il, case=False, na=False)]
+    if s_rec: f_df = f_df[f_df.iloc[:, 2].astype(str).str.contains(s_rec, case=False, na=False)]
+    if s_title: f_df = f_df[f_df.iloc[:, 3].astype(str).str.contains(s_title, case=False, na=False)]
+    if s_author: f_df = f_df[f_df.iloc[:, 4].astype(str).str.contains(s_author, case=False, na=False)]
+    if s_ar: f_df = f_df[f_df.iloc[:, 5].astype(str).str.contains(s_ar, case=False, na=False)]
+    if s_quiz: f_df = f_df[f_df.iloc[:, 7].astype(str).str.contains(s_quiz, case=False, na=False)]
+    if s_words: f_df = f_df[f_df.iloc[:, 8].astype(str).str.contains(s_words, case=False, na=False)]
+    if s_fnf != "全部": f_df = f_df[f_df.iloc[:, 14].astype(str).str.contains(s_fnf, case=False, na=False)]
+    if s_topic: f_df = f_df[f_df.iloc[:, 15].astype(str).str.contains(s_topic, case=False, na=False)]
+    if s_series: f_df = f_df[f_df.iloc[:, 16].astype(str).str.contains(s_series, case=False, na=False)]
 
 # ==========================================
-# 6. 主页面：盲盒与书墙
+# 5. 主视图：盲盒 + 收藏跳转书墙
 # ==========================================
 if st.session_state.bk_focus is None:
-    st.title("🌟 发现下一本好书")
-
-    # 盲盒选书大框 (自查：确保内容不留白)
-    st.markdown('<div class="blind-box-container">', unsafe_allow_html=True)
-    st.subheader("🎁 选书盲盒")
-    if st.button("🚀 随机抽取一本"):
-        st.session_state.blind_idx = random.randint(0, len(df)-1)
+    st.title("🌟 智慧书库中心")
     
-    if st.session_state.blind_idx is not None:
-        b_row = df.iloc[st.session_state.blind_idx]
-        st.markdown(f"### 🎊 为您选中：《{b_row['Title']}》")
-        st.write(f"👤 作者: {b_row['Author']} | 🏷️ 主题: {b_row['Topic']}")
-        if st.button("查看详情", key="go_blind"):
+    # 盲盒区
+    st.markdown('<div class="blind-box-container">', unsafe_allow_html=True)
+    if st.button("🎁 开启选书盲盒", use_container_width=True):
+        st.balloons()
+        if not f_df.empty: st.session_state.blind_idx = random.choice(f_df.index)
+    
+    if st.session_state.blind_idx is not None and st.session_state.blind_idx in raw_df.index:
+        b_row = raw_df.loc[st.session_state.blind_idx]
+        st.markdown(f"### 🎊 选中：《{b_row.iloc[3]}》")
+        st.write(f"作者：{b_row.iloc[4]} | 主题：{b_row.iloc[15]}")
+        if st.button("进入详情页", key="go_blind"):
             st.session_state.bk_focus = st.session_state.blind_idx
             st.rerun()
     st.markdown('</div>', unsafe_allow_html=True)
 
-    # 书墙列表
-    st.write("---")
+    # 书墙
+    st.write(f"--- 找到 {len(f_df)} 本书 ---")
     cols = st.columns(3)
-    for i, (idx, row) in enumerate(df.head(12).iterrows()):
+    for i, (idx, row) in enumerate(f_df.head(24).iterrows()):
         with cols[i % 3]:
-            st.markdown(f"""
-                <div class="book-tile">
-                    <h4>《{row['Title']}》</h4>
-                    <p>👤 {row['Author']}<br>🏷️ {row['Topic']}</p>
-                </div>
-            """, unsafe_allow_html=True)
-            if st.button("阅读感悟", key=f"dt_{idx}", use_container_width=True):
+            st.markdown(f"""<div class="book-tile">
+                <h4 style="color:#1e3d59;">《{row.iloc[3]}》</h4>
+                <p style="font-size:0.85em; color:#666;">👤 {row.iloc[4]}<br>🏷️ {row.iloc[15]}</p>
+                </div>""", unsafe_allow_html=True)
+            c_l, c_r = st.columns(2)
+            # 点赞跳转逻辑：点赞后记录并直接进入详情页
+            if c_l.button("❤️ 收藏" if row.iloc[3] in st.session_state.voted else "🤍 收藏", key=f"v_{idx}"):
+                st.session_state.voted.add(row.iloc[3])
+                st.session_state.bk_focus = idx
+                st.rerun()
+            if c_r.button("查看感悟", key=f"d_{idx}"):
                 st.session_state.bk_focus = idx
                 st.rerun()
 
 # ==========================================
-# 7. 详情页 (修复所有丢失的字段和留言)
+# 6. 详情页：12个维度 + 留言
 # ==========================================
 else:
-    row = df.iloc[st.session_state.bk_focus]
-    title = str(row['Title'])
+    row = raw_df.loc[st.session_state.bk_focus]
+    title = str(row.iloc[3])
     
-    if st.button("⬅️ 返回列表"):
-        st.session_state.bk_focus = None
-        st.rerun()
+    if st.button("⬅️ 返回书墙"): st.session_state.bk_focus = None; st.rerun()
 
     st.header(f"📖 {title}")
+    
+    # 10个核心维度展示 (Index 1, 2, 3, 4, 5, 7, 8, 14, 15, 16)
+    dims = [
+        ("🎯 IL", 1), ("🙋 推荐人", 2), ("👤 作者", 4), 
+        ("📊 AR", 5), ("🔢 Quiz", 7), ("📝 词数", 8), 
+        ("📚 类型", 14), ("🏷️ 主题", 15), ("🔗 系列", 16)
+    ]
+    cols = st.columns(3)
+    for i, (label, ix) in enumerate(dims):
+        with cols[i % 3]:
+            st.markdown(f'<div class="info-card"><small>{label}</small><br><b>{row.iloc[ix]}</b></div>', unsafe_allow_html=True)
 
-    # 点赞/收藏 (自查：直接体现在界面上)
-    liked = title in st.session_state.voted
-    if st.button("❤️ 已收藏" if liked else "🤍 收藏本书"):
-        if liked: st.session_state.voted.remove(title)
-        else: st.session_state.voted.add(title)
-        st.rerun()
-
-    # 核心字段展示 (Topic, Series, Rec)
+    # 中英文理由 (维度 11 & 12)
     st.write("---")
-    c1, c2, c3 = st.columns(3)
-    with c1: st.markdown(f'<div class="info-card"><b>主题 (Topic)</b><br>{row["Topic"]}</div>', unsafe_allow_html=True)
-    with c2: st.markdown(f'<div class="info-card"><b>系列 (Series)</b><br>{row["Series"]}</div>', unsafe_allow_html=True)
-    with c3: st.markdown(f'<div class="info-card"><b>推荐人 (Rec)</b><br>{row["Rec"]}</div>', unsafe_allow_html=True)
+    l1, l2, _ = st.columns([1,1,4])
+    if l1.button("中文理由"): st.session_state.lang = "CN"; st.rerun()
+    if l2.button("English"): st.session_state.lang = "EN"; st.rerun()
+    reason = row.iloc[12] if st.session_state.lang == "CN" else row.iloc[10]
+    st.info(f"🌟 推荐理由：{reason}")
 
-    # 留言板 (自查：采用最稳健的读取方式)
+    # 留言板
     st.subheader("💬 读者感悟")
     if db:
         try:
-            # 放弃 order_by 排序以避免索引未创建导致的 400 错误
-            comments = db.collection("comments").where("book", "==", title).stream()
-            count = 0
-            for m in comments:
+            # 基础读取，不排序避免 400 错误
+            cms = db.collection("comments").where("book", "==", title).stream()
+            for m in cms:
                 d = m.to_dict()
                 st.markdown(f"""<div class="comment-card">
-                    <small>{d.get('time', '未知时间')} | {d.get('nickname', '匿名')}</small><br>{d.get('text', '')}
+                    <small>{d.get('time')} | {d.get('nickname')}</small><br>{d.get('text')}
                 </div>""", unsafe_allow_html=True)
-                count += 1
-            if count == 0: st.info("暂无感悟，快来当第一个分享的人吧！")
-        except Exception as e:
-            st.warning("留言功能正在同步中...")
+        except: st.warning("留言加载中...")
 
-    # 发表感悟
     if st.session_state.user:
-        st.write("---")
-        new_msg = st.text_area("分享你的阅读心得...")
-        if st.button("发布感悟"):
-            if new_msg.strip():
+        new_txt = st.text_area("分享你的心得...")
+        if st.button("提交感悟"):
+            if new_txt.strip():
                 db.collection("comments").add({
-                    "book": title,
-                    "nickname": st.session_state.user['nickname'],
-                    "text": new_msg,
-                    "time": datetime.now().strftime("%Y-%m-%d %H:%M")
+                    "book": title, "nickname": st.session_state.user['nickname'],
+                    "text": new_txt, "time": datetime.now().strftime("%Y-%m-%d %H:%M")
                 })
-                st.success("发布成功！")
                 st.rerun()
-    else:
-        st.warning("🔒 登录后即可发表阅读感悟")
