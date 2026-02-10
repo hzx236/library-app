@@ -4,6 +4,7 @@ from datetime import datetime
 from google.cloud import firestore
 from google.oauth2 import service_account
 import json
+import os
 
 # ==========================================
 # 1. 样式与视觉配置 (完全保留原有设计)
@@ -35,40 +36,62 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 # ==========================================
-# 2. 数据库与数据引擎
+# 2. 数据库与数据引擎 (新植入逻辑)
 # ==========================================
 
-# --- Firestore 连接 (替换原本的本地 JSON 逻辑) ---
 @st.cache_resource
 def get_db_client():
-    key_dict = st.secrets["firestore"]
-    creds = service_account.Credentials.from_service_account_info(key_dict)
-    return firestore.Client(credentials=creds, project=key_dict["project_id"])
+    """连接 Firestore 数据库"""
+    try:
+        key_dict = st.secrets["firestore"]
+        creds = service_account.Credentials.from_service_account_info(key_dict)
+        return firestore.Client(credentials=creds, project=key_dict["project_id"])
+    except Exception as e:
+        st.error(f"无法读取 Secrets 配置: {e}")
+        return None
 
 db = get_db_client()
 
 def load_db_comments(book_title):
-    """从云端读取留言"""
-    docs = db.collection("comments").where("book", "==", book_title).order_by("timestamp", direction=firestore.Query.DESCENDING).stream()
-    return [{"id": d.id, **d.to_dict()} for d in docs]
+    """从云端读取留言 (带排序降级保护)"""
+    if db is None: return []
+    try:
+        col_ref = db.collection("comments").where("book", "==", book_title)
+        # 尝试按时间戳排序（如果索引已生成）
+        try:
+            docs = col_ref.order_by("timestamp", direction=firestore.Query.DESCENDING).stream()
+            return [{"id": d.id, **d.to_dict()} for d in docs]
+        except Exception:
+            # 索引未就绪时，拉取所有数据并在本地手动排序
+            docs = col_ref.stream()
+            comments = [{"id": d.id, **d.to_dict()} for d in docs]
+            return sorted(comments, key=lambda x: x.get('time', ''), reverse=True)
+    except Exception as e:
+        st.sidebar.warning(f"数据库访问受限: {e}")
+        return []
 
 def save_db_comment(book_title, text, comment_id=None):
-    """保存或更新云端留言"""
+    """保存留言至云端"""
+    if db is None: return
     data = {
         "book": book_title,
         "text": text,
         "time": datetime.now().strftime("%Y-%m-%d %H:%M"),
         "timestamp": firestore.SERVER_TIMESTAMP
     }
-    if comment_id:
-        db.collection("comments").document(comment_id).update(data)
-    else:
-        db.collection("comments").add(data)
+    try:
+        if comment_id:
+            db.collection("comments").document(comment_id).update(data)
+        else:
+            db.collection("comments").add(data)
+        st.toast("✅ 留言已同步至云端", icon='☁️')
+    except Exception as e:
+        st.error(f"保存失败: {e}")
 
-# --- 图书数据加载 ---
+# --- 图书数据引擎 ---
 CSV_URL = "https://docs.google.com/spreadsheets/d/e/2PACX-1vTTIN0pxN-TYH1-_Exm6dfsUdo7SbnqVnWvdP_kqe63PkSL8ni7bH6r6c86MLUtf_q58r0gI2Ft2460/pub?output=csv"
 
-@st.cache_data(ttl=600) # 提高 TTL 增加稳定性
+@st.cache_data(ttl=600)
 def load_data():
     try:
         df = pd.read_csv(CSV_URL)
@@ -90,7 +113,7 @@ for key in ['bk_focus', 'lang_mode', 'voted', 'edit_id', 'edit_doc_id', 'blind_i
         else: st.session_state[key] = None
 
 # ==========================================
-# 3. 图书详情页
+# 3. 图书详情页 (带数据库读写逻辑)
 # ==========================================
 if st.session_state.bk_focus is not None:
     row = df.iloc[st.session_state.bk_focus]
@@ -119,17 +142,17 @@ if st.session_state.bk_focus is not None:
     st.markdown(f'<div style="background:#fffcf5; padding:25px; border-radius:15px; border:2px dashed #ff6e40;">{row.iloc[idx["cn"]] if st.session_state.lang_mode=="CN" else row.iloc[idx["en"]]}</div>', unsafe_allow_html=True)
 
     st.markdown("---")
-    st.subheader("💬 读者感悟")
+    st.subheader("💬 读者感悟 (云端实时同步)")
     
-    # 从 Firestore 加载云端留言
+    # --- 加载数据库留言 ---
     cloud_comments = load_db_comments(title_key)
     
     for i, m in enumerate(cloud_comments):
-        st.markdown(f'<div class="comment-box"><small>📅 {m["time"]}</small><br>{m["text"]}</div>', unsafe_allow_html=True)
+        st.markdown(f'<div class="comment-box"><small>📅 {m.get("time")}</small><br>{m.get("text")}</div>', unsafe_allow_html=True)
         if st.session_state.edit_id is None:
             if st.button(f"✏️ 修改", key=f"e_btn_{i}"):
                 st.session_state.edit_id = i
-                st.session_state.edit_doc_id = m["id"] # 记录数据库文档 ID
+                st.session_state.edit_doc_id = m["id"]
                 st.session_state.temp_comment = m["text"]
                 st.session_state.form_version += 1
                 st.rerun()
@@ -144,7 +167,6 @@ if st.session_state.bk_focus is not None:
         cb1, cb2, _ = st.columns([1, 1, 4])
         if cb1.form_submit_button("发布" if not is_editing else "保存"):
             if user_input.strip():
-                # 调用云端保存函数
                 save_db_comment(title_key, user_input, st.session_state.get('edit_doc_id'))
                 st.session_state.edit_id = None
                 st.session_state.edit_doc_id = None
@@ -162,14 +184,12 @@ if st.session_state.bk_focus is not None:
                 st.rerun()
 
 # ==========================================
-# 4. 主视图
+# 4. 主视图 (筛选与分类，保留所有功能)
 # ==========================================
 elif not df.empty:
     with st.sidebar:
-        try:
-            st.image("YDRC-logo.png", use_container_width=True)
-        except:
-            pass 
+        try: st.image("YDRC-logo.png", use_container_width=True)
+        except: pass 
         
         st.markdown('<div class="sidebar-title">🔍 检索中心</div>', unsafe_allow_html=True)
         f_fuzzy = st.text_input("💡 **智能模糊检索**", placeholder="输入关键词...")
@@ -237,9 +257,7 @@ elif not df.empty:
     with tab2:
         st.subheader("📊 ATOS Book Level 数据分布")
         if not f_df.empty:
-            ar_counts = f_df.iloc[:, idx['ar']].value_counts().sort_index()
-            st.bar_chart(ar_counts)
-        else: st.info("请先在左侧筛选图书")
+            st.bar_chart(f_df.iloc[:, idx['ar']].value_counts().sort_index())
 
     with tab3:
         st.subheader("🏆 您最喜爱的图书")
